@@ -21,7 +21,7 @@ MODEL_FILE = "bradyai_v3.pt"
 
 MEMORY_FILE = Path("brady_memory.json")
 
-MAX_NEW_TOKENS = 150
+MAX_NEW_TOKENS = 50
 TEMPERATURE = 0.25
 TOP_K = 10
 
