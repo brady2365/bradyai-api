@@ -4,8 +4,8 @@ import re
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from flask import Flask, jsonify, request
-from flask_cors import CORS
 
 from model import BradyAI
 from research import research
@@ -20,13 +20,22 @@ MODEL_FILE = "bradyai_v3.pt"
 
 MEMORY_FILE = Path("brady_memory.json")
 
-MAX_NEW_TOKENS = 50
+MAX_NEW_TOKENS = 150
 TEMPERATURE = 0.25
 TOP_K = 10
 
 PUBLIC_MODE = (
-    os.environ.get("PUBLIC_MODE", "true").lower() == "true"
+    os.environ.get("PUBLIC_MODE", "false").lower() == "true"
 )
+
+
+# ==========================================
+# DEVICE
+# ==========================================
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+print("Loading BradyAI API on", device)
 
 
 # ==========================================
@@ -34,24 +43,6 @@ PUBLIC_MODE = (
 # ==========================================
 
 app = Flask(__name__)
-
-# Allow your separate website to communicate
-# with this API.
-CORS(app)
-
-
-# ==========================================
-# DEVICE
-# ==========================================
-
-device = (
-    "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
-)
-
-print("BradyAI API starting...")
-print("Device:", device)
 
 
 # ==========================================
@@ -72,11 +63,7 @@ def load_memory():
 
             value = json.load(file)
 
-        return (
-            value
-            if isinstance(value, dict)
-            else {}
-        )
+        return value if isinstance(value, dict) else {}
 
     except (
         OSError,
@@ -116,9 +103,7 @@ def save_memory():
 
 def load_model():
 
-    print(
-        "Loading BradyAI model..."
-    )
+    print("Loading model:", MODEL_FILE)
 
     checkpoint = torch.load(
         MODEL_FILE,
@@ -126,19 +111,13 @@ def load_model():
         weights_only=False
     )
 
-    # ------------------------------
-    # Tokenizer
-    # ------------------------------
-
     tokenizer = BPETokenizer(
         vocab_size=len(
             checkpoint["vocab"]
         )
     )
 
-    tokenizer.vocab = (
-        checkpoint["vocab"]
-    )
+    tokenizer.vocab = checkpoint["vocab"]
 
     tokenizer.token_to_id = (
         checkpoint["token_to_id"]
@@ -152,43 +131,18 @@ def load_model():
 
     tokenizer.merges = [
         tuple(merge)
-        for merge
-        in checkpoint["merges"]
+        for merge in checkpoint["merges"]
     ]
-
-    # ------------------------------
-    # Model configuration
-    # ------------------------------
 
     config = checkpoint["config"]
 
     model = BradyAI(
-
-        vocab_size=len(
-            tokenizer
-        ),
-
-        embed_size=config[
-            "embed_size"
-        ],
-
-        num_heads=config[
-            "num_heads"
-        ],
-
-        num_layers=config[
-            "num_layers"
-        ],
-
-        block_size=config[
-            "block_size"
-        ],
-
+        vocab_size=len(tokenizer),
+        embed_size=config["embed_size"],
+        num_heads=config["num_heads"],
+        num_layers=config["num_layers"],
+        block_size=config["block_size"],
     ).to(device)
-
-    # ------------------------------
-    # Model weights
-    # ------------------------------
 
     model.load_state_dict(
         checkpoint["model_state"]
@@ -196,9 +150,7 @@ def load_model():
 
     model.eval()
 
-    print(
-        "BradyAI model loaded."
-    )
+    print("BradyAI model loaded.")
 
     return (
         model,
@@ -209,7 +161,6 @@ def load_model():
 
 model, tokenizer, block_size = load_model()
 
-
 EOS_ID = tokenizer.token_to_id.get(
     "<EOS>"
 )
@@ -219,15 +170,9 @@ EOS_ID = tokenizer.token_to_id.get(
 # RESEARCH DETECTION
 # ==========================================
 
-def needs_research(
-    user_text
-):
+def needs_research(user_text):
 
-    text = (
-        user_text
-        .lower()
-        .strip()
-    )
+    text = user_text.lower().strip()
 
     commands = (
         "research ",
@@ -263,9 +208,7 @@ def needs_research(
     )
 
 
-def clean_research_query(
-    user_text
-):
+def clean_research_query(user_text):
 
     text = user_text.strip()
 
@@ -282,9 +225,7 @@ def clean_research_query(
 
     for prefix in prefixes:
 
-        if text.lower().startswith(
-            prefix
-        ):
+        if text.lower().startswith(prefix):
 
             return text[
                 len(prefix):
@@ -297,9 +238,7 @@ def clean_research_query(
 # RESEARCH RESPONSE
 # ==========================================
 
-def build_research_answer(
-    result
-):
+def build_research_answer(result):
 
     sources = result.get(
         "sources",
@@ -310,8 +249,7 @@ def build_research_answer(
 
         return (
             "I could not find reliable "
-            "sources for that. Try "
-            "different wording."
+            "sources for that. Try different wording."
         )
 
     parts = [
@@ -373,22 +311,21 @@ def build_research_answer(
         if len(parts) >= 4:
             break
 
-    if len(parts) > 1:
-        return "\n\n".join(parts)
+    if len(parts) <= 1:
 
-    return (
-        "I found sources but no "
-        "useful summary."
-    )
+        return (
+            "I found sources but no "
+            "useful summary."
+        )
+
+    return "\n\n".join(parts)
 
 
 # ==========================================
 # MEMORY
 # ==========================================
 
-def memory_reply(
-    user_text
-):
+def memory_reply(user_text):
 
     text = user_text.strip()
     lower = text.lower()
@@ -424,9 +361,9 @@ def memory_reply(
             "for privacy."
         )
 
-    # --------------------------------------
-    # Name
-    # --------------------------------------
+    # ------------------------------
+    # NAME
+    # ------------------------------
 
     name_match = re.search(
         r"^(?:my name is|call me)\s+"
@@ -448,9 +385,9 @@ def memory_reply(
             "I will remember your name."
         )
 
-    # --------------------------------------
-    # Favorite color
-    # --------------------------------------
+    # ------------------------------
+    # FAVORITE COLOR
+    # ------------------------------
 
     color_match = re.search(
         r"^my favorite colo[u]?r is\s+"
@@ -462,8 +399,7 @@ def memory_reply(
     if color_match:
 
         color = (
-            color_match
-            .group(1)
+            color_match.group(1)
             .lower()
         )
 
@@ -478,9 +414,9 @@ def memory_reply(
             f"favorite color is {color}."
         )
 
-    # --------------------------------------
-    # Learning
-    # --------------------------------------
+    # ------------------------------
+    # LEARNING
+    # ------------------------------
 
     learning_match = re.search(
         r"^i am learning\s+"
@@ -508,9 +444,9 @@ def memory_reply(
             f"are learning {subject}."
         )
 
-    # --------------------------------------
-    # Remember
-    # --------------------------------------
+    # ------------------------------
+    # REMEMBER NOTE
+    # ------------------------------
 
     remember_match = re.search(
         r"^remember\s+(.+)$",
@@ -528,12 +464,9 @@ def memory_reply(
 
         if note:
 
-            notes = (
-                session_memory
-                .setdefault(
-                    "notes",
-                    []
-                )
+            notes = session_memory.setdefault(
+                "notes",
+                []
             )
 
             if note not in notes:
@@ -547,9 +480,9 @@ def memory_reply(
                 + note
             )
 
-    # --------------------------------------
-    # Forget
-    # --------------------------------------
+    # ------------------------------
+    # FORGET
+    # ------------------------------
 
     forget_match = re.search(
         r"^forget\s+(.+)$",
@@ -572,7 +505,7 @@ def memory_reply(
 
         if requested.lower() in (
             "all notes",
-            "my notes"
+            "my notes",
         ):
 
             session_memory["notes"] = []
@@ -586,10 +519,7 @@ def memory_reply(
 
         for note in notes:
 
-            if (
-                note.lower()
-                == requested.lower()
-            ):
+            if note.lower() == requested.lower():
 
                 notes.remove(note)
 
@@ -606,9 +536,9 @@ def memory_reply(
             "saved notes."
         )
 
-    # --------------------------------------
-    # Ask name
-    # --------------------------------------
+    # ------------------------------
+    # NAME QUESTION
+    # ------------------------------
 
     if (
         "what is my name" in lower
@@ -628,16 +558,13 @@ def memory_reply(
             "your name yet."
         )
 
-    # --------------------------------------
-    # Ask favorite color
-    # --------------------------------------
+    # ------------------------------
+    # COLOR QUESTION
+    # ------------------------------
 
     if (
-        "what is my favorite color"
-        in lower
-        or
-        "remember my favorite color"
-        in lower
+        "what is my favorite color" in lower
+        or "remember my favorite color" in lower
     ):
 
         if "favorite_color" in session_memory:
@@ -651,19 +578,17 @@ def memory_reply(
             )
 
         return (
-            "You have not told me your "
-            "favorite color yet."
+            "You have not told me "
+            "your favorite color yet."
         )
 
-    # --------------------------------------
-    # Ask learning
-    # --------------------------------------
+    # ------------------------------
+    # LEARNING QUESTION
+    # ------------------------------
 
     if (
         "what am i learning" in lower
-        or
-        "remember what i am learning"
-        in lower
+        or "remember what i am learning" in lower
     ):
 
         if "learning" in session_memory:
@@ -677,19 +602,18 @@ def memory_reply(
             )
 
         return (
-            "You have not told me what "
-            "you are learning yet."
+            "You have not told me "
+            "what you are learning yet."
         )
 
-    # --------------------------------------
-    # Show notes
-    # --------------------------------------
+    # ------------------------------
+    # NOTES
+    # ------------------------------
 
     if (
         "show my notes" in lower
         or "list my notes" in lower
-        or
-        "what notes do you remember"
+        or "what notes do you remember"
         in lower
     ):
 
@@ -709,9 +633,9 @@ def memory_reply(
             "You have no saved notes yet."
         )
 
-    # --------------------------------------
-    # What do you remember?
-    # --------------------------------------
+    # ------------------------------
+    # EVERYTHING
+    # ------------------------------
 
     if "what do you remember" in lower:
 
@@ -768,13 +692,11 @@ def memory_reply(
 
 
 # ==========================================
-# AI GENERATION
+# GENERATE
 # ==========================================
 
 @torch.no_grad()
-def generate(
-    user_text
-):
+def generate(user_text):
 
     token_ids = tokenizer.encode(
         "User: "
@@ -802,9 +724,7 @@ def generate(
 
     generated = []
 
-    for _ in range(
-        MAX_NEW_TOKENS
-    ):
+    for _ in range(MAX_NEW_TOKENS):
 
         logits, _ = model(
             x[:, -block_size:]
@@ -837,16 +757,14 @@ def generate(
         )
 
         next_token = torch.multinomial(
-            torch.softmax(
+            F.softmax(
                 filtered,
                 dim=-1
             ),
             num_samples=1
         )
 
-        token_id = (
-            next_token.item()
-        )
+        token_id = next_token.item()
 
         if token_id == EOS_ID:
             break
@@ -856,10 +774,7 @@ def generate(
         )
 
         x = torch.cat(
-            [
-                x,
-                next_token
-            ],
+            [x, next_token],
             dim=1
         )
 
@@ -883,32 +798,50 @@ def generate(
 
 
 # ==========================================
-# HEALTH CHECK
+# API ROUTES
 # ==========================================
 
-@app.get("/health")
+@app.get("/")
+def home():
+
+    return jsonify({
+        "name": "BradyAI",
+        "status": "online",
+        "message": "BradyAI API is running."
+    })
+
+
+@app.get("/api")
+def api_info():
+
+    return jsonify({
+        "name": "BradyAI API",
+        "status": "online",
+        "endpoints": [
+            "/",
+            "/api",
+            "/api/chat",
+            "/api/health"
+        ]
+    })
+
+
+@app.get("/api/health")
 def health():
 
     return jsonify({
         "status": "ok",
-        "model_loaded": model is not None,
+        "model": MODEL_FILE,
         "device": device
     })
 
 
-# ==========================================
-# CHAT API
-# ==========================================
-
 @app.post("/api/chat")
 def chat():
 
-    data = (
-        request.get_json(
-            silent=True
-        )
-        or {}
-    )
+    data = request.get_json(
+        silent=True
+    ) or {}
 
     message = str(
         data.get(
@@ -924,22 +857,18 @@ def chat():
                 "Enter a message first."
         }), 400
 
-    # --------------------------------------
-    # Clear memory
-    # --------------------------------------
+    # ------------------------------
+    # CLEAR MEMORY
+    # ------------------------------
 
-    if (
-        message.lower()
-        == "clear memory"
-    ):
+    if message.lower() == "clear memory":
 
         if PUBLIC_MODE:
 
             return jsonify({
                 "reply":
-                    "Personal memory is "
-                    "disabled on this "
-                    "public demo.",
+                    "Personal memory is disabled "
+                    "on this public demo.",
                 "sources": []
             })
 
@@ -953,16 +882,14 @@ def chat():
             "sources": []
         })
 
-    # --------------------------------------
-    # Research
-    # --------------------------------------
+    # ------------------------------
+    # RESEARCH
+    # ------------------------------
 
     if needs_research(message):
 
         result = research(
-            clean_research_query(
-                message
-            )
+            clean_research_query(message)
         )
 
         return jsonify({
@@ -970,7 +897,6 @@ def chat():
                 build_research_answer(
                     result
                 ),
-
             "sources":
                 result.get(
                     "sources",
@@ -978,37 +904,34 @@ def chat():
                 )
         })
 
-    # --------------------------------------
-    # Memory
-    # --------------------------------------
+    # ------------------------------
+    # MEMORY
+    # ------------------------------
 
     saved_reply = memory_reply(
         message
     )
 
-    # --------------------------------------
-    # Normal AI
-    # --------------------------------------
+    if saved_reply is not None:
 
-    reply = (
-        saved_reply
-        if saved_reply is not None
-        else generate(message)
-    )
+        reply = saved_reply
+
+    else:
+
+        reply = generate(
+            message
+        )
 
     return jsonify({
         "reply":
             reply
-            or
-            "I do not know how to "
-            "respond to that yet.",
-
+            or "I do not know how to respond to that yet.",
         "sources": []
     })
 
 
 # ==========================================
-# RUN LOCALLY
+# LOCAL RUN
 # ==========================================
 
 if __name__ == "__main__":
